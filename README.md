@@ -9,7 +9,7 @@ You need [Node.js](https://nodejs.org) 20 or newer.
 
 ```bash
 cd server
-npm install
+npm install #only run on first startup
 npm start
 ```
 
