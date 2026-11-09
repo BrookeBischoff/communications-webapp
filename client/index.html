@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chat</title>
+  <link rel="stylesheet" href="/vendor/98.css">
+  <link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+  <main id="desktop" aria-label="Desktop"></main>
+
+  <footer id="taskbar">
+    <button id="start-button" type="button" aria-haspopup="menu" aria-expanded="false">
+      <strong>Start</strong>
+    </button>
+    <div id="tasks" role="toolbar" aria-label="Open windows"></div>
+    <div id="tray">
+      <span id="tray-status">Connecting</span>
+      <span id="tray-clock"></span>
+    </div>
+  </footer>
+
+  <noscript>This app needs JavaScript.</noscript>
+  <script type="module" src="/js/main.js"></script>
+</body>
+</html>

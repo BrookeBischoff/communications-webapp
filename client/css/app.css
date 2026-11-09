@@ -1,0 +1,204 @@
+/* App styles on top of 98.css (which supplies windows, buttons, fields). */
+
+:root {
+  --desktop: #008080;
+  --face: #c0c0c0;
+  --shadow-dark: #808080;
+  --shadow-darkest: #0a0a0a;
+  --highlight: #ffffff;
+  --taskbar-height: 30px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  background: var(--desktop);
+  font-family: "Pixelated MS Sans Serif", Arial, sans-serif;
+  font-size: 11px;
+  color: #000;
+}
+
+/* ---------- Desktop and windows ---------- */
+
+#desktop {
+  position: fixed;
+  inset: 0 0 var(--taskbar-height) 0;
+  overflow: hidden;
+}
+
+.app-window {
+  position: absolute;
+  max-width: calc(100vw - 8px);
+  display: flex;
+  flex-direction: column;
+}
+
+.app-window[hidden] { display: none; }
+
+.app-window .title-bar {
+  cursor: default;
+  user-select: none;
+  touch-action: none; /* lets the title bar be dragged on touch screens */
+}
+
+.app-window .window-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---------- Taskbar ---------- */
+
+#taskbar {
+  position: fixed;
+  inset: auto 0 0 0;
+  height: var(--taskbar-height);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 3px;
+  background: var(--face);
+  box-shadow: inset 0 1px var(--face), inset 0 2px var(--highlight);
+  z-index: 100000;
+}
+
+#start-button {
+  min-width: 54px;
+  height: 22px;
+  padding: 0 8px;
+}
+
+#tasks {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  gap: 3px;
+}
+
+.task {
+  flex: 0 1 160px;
+  min-width: 0;
+  height: 22px;
+  padding: 0 8px;
+  text-align: left;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.task.active {
+  font-weight: bold;
+  background-image: repeating-conic-gradient(var(--face) 0% 25%, var(--highlight) 0% 50%);
+  background-size: 2px 2px;
+  box-shadow: inset -1px -1px var(--highlight), inset 1px 1px var(--shadow-darkest),
+    inset -2px -2px #dfdfdf, inset 2px 2px var(--shadow-dark);
+}
+
+#tray {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 22px;
+  padding: 0 8px;
+  box-shadow: inset -1px -1px var(--highlight), inset 1px 1px var(--shadow-dark);
+}
+
+/* ---------- Start menu ---------- */
+
+#start-menu {
+  position: fixed;
+  left: 3px;
+  bottom: var(--taskbar-height);
+  min-width: 170px;
+  margin: 0;
+  padding: 3px;
+  list-style: none;
+  background: var(--face);
+  box-shadow: inset -1px -1px var(--shadow-darkest), inset 1px 1px #dfdfdf,
+    inset -2px -2px var(--shadow-dark), inset 2px 2px var(--highlight);
+  z-index: 100001;
+}
+
+#start-menu[hidden] { display: none; }
+
+#start-menu button {
+  display: block;
+  width: 100%;
+  min-height: 26px;
+  padding: 0 24px 0 20px;
+  text-align: left;
+  background: transparent;
+  box-shadow: none;
+  color: #000;
+  text-shadow: none;
+}
+
+#start-menu button:hover:not(:disabled),
+#start-menu button:focus-visible {
+  background: navy;
+  color: #fff;
+  outline: none;
+}
+
+#start-menu button:disabled { color: var(--shadow-dark); text-shadow: 1px 1px #fff; }
+
+/* ---------- Login window ---------- */
+
+.login-body p { margin: 0 0 10px; }
+.login-body .field-row input { flex: 1; }
+.login-actions { display: flex; justify-content: flex-end; margin-top: 12px; }
+.login-error { min-height: 2.6em; margin: 8px 0 0; color: #a00000; }
+.login-note { margin: 8px 0 0; color: var(--shadow-dark); }
+
+/* ---------- Chat window ---------- */
+
+.chat-columns {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  gap: 6px;
+}
+
+.chat-log {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 6px;
+  background: #fff;
+  font-family: "Pixelated MS Sans Serif", Arial, sans-serif;
+}
+
+.chat-line { margin: 0 0 3px; overflow-wrap: anywhere; }
+.chat-time { color: var(--shadow-dark); margin-right: 4px; }
+.chat-name { font-weight: bold; margin-right: 4px; }
+.chat-line.mine .chat-name { color: navy; }
+.chat-line.system { color: var(--shadow-dark); font-style: italic; }
+.chat-empty { color: var(--shadow-dark); margin: 0; }
+
+.chat-side { width: 128px; display: flex; flex-direction: column; }
+.chat-side fieldset { flex: 1; min-height: 0; margin: 0; display: flex; flex-direction: column; }
+.chat-users { flex: 1; min-height: 0; margin: 0; overflow: auto; }
+.chat-users li { margin: 0 0 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-users li.me { font-weight: bold; }
+
+.chat-form { display: flex; gap: 6px; margin-top: 6px; }
+.chat-form input { flex: 1; min-width: 0; }
+
+.chat .status-bar { margin-top: 6px; }
+
+@media (max-width: 520px) {
+  .chat-side { display: none; }
+}
+
+.chat {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
