@@ -67,9 +67,11 @@ export function openChatWindow({ manager, store, onSend }) {
 
   let drawnMessages = null;
   let drawnUsers = null;
-  let drawnName = null;
+  let drawnUser = null;
 
+  // People are identified by id (display names are not unique).
   function renderLog(state) {
+    const myId = state.user?.id;
     const nearBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 24;
     if (state.messages.length === 0) {
       log.replaceChildren(el('p', 'chat-empty', 'No messages yet. Say hello.'));
@@ -77,7 +79,7 @@ export function openChatWindow({ manager, store, onSend }) {
     }
     const lines = state.messages.map((message) => {
       if (message.system) return el('p', 'chat-line system', message.body);
-      const line = el('p', message.from === state.username ? 'chat-line mine' : 'chat-line');
+      const line = el('p', message.fromId === myId ? 'chat-line mine' : 'chat-line');
       line.append(
         el('span', 'chat-time', formatTime(message.ts)),
         el('span', 'chat-name', `${message.from}:`),
@@ -90,19 +92,22 @@ export function openChatWindow({ manager, store, onSend }) {
   }
 
   function renderUsers(state) {
-    const items = state.users.map((name) => el('li', name === state.username ? 'me' : '', name));
+    const myId = state.user?.id;
+    const items = state.users.map((person) =>
+      el('li', person.id === myId ? 'me' : '', person.displayName)
+    );
     userList.replaceChildren(...items);
   }
 
   function render(state) {
-    if (state.messages !== drawnMessages || state.username !== drawnName) renderLog(state);
-    if (state.users !== drawnUsers || state.username !== drawnName) renderUsers(state);
+    if (state.messages !== drawnMessages || state.user !== drawnUser) renderLog(state);
+    if (state.users !== drawnUsers || state.user !== drawnUser) renderUsers(state);
     drawnMessages = state.messages;
     drawnUsers = state.users;
-    drawnName = state.username;
+    drawnUser = state.user;
 
     if (state.status === 'connected') {
-      statusConnection.textContent = `Logged on as ${state.username}`;
+      statusConnection.textContent = `Logged on as ${state.user?.displayName ?? ''}`;
     } else if (state.status === 'connecting') {
       statusConnection.textContent = 'Connecting...';
     } else {

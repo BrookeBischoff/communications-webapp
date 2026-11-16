@@ -4,6 +4,9 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const config = require('./config');
+const { openDatabase } = require('./db');
+const { createAuth } = require('./auth/service');
+const { createAuthRoutes, parseCookies } = require('./auth/routes');
 const { createGateway } = require('./ws/gateway');
 
 const CLIENT_DIR = path.resolve(__dirname, '..', '..', 'client');
@@ -46,13 +49,31 @@ function resolveFile(urlPath) {
   return full;
 }
 
+const db = openDatabase(config.DB_PATH);
+const auth = createAuth(db);
+auth.purgeExpiredSessions();
+const purgeTimer = setInterval(() => auth.purgeExpiredSessions(), 60 * 60 * 1000);
+purgeTimer.unref();
+
+let gateway = null; // assigned below; logout can only happen after the server is listening
+const routes = createAuthRoutes({
+  auth,
+  onLogout: (sessionId) => gateway.disconnectSession(sessionId),
+});
+
 const server = http.createServer((req, res) => {
+  const { pathname } = new URL(req.url, 'http://localhost');
+
+  if (pathname.startsWith('/api/')) {
+    routes.handle(req, res, pathname);
+    return;
+  }
+
   if (req.method !== 'GET' && req.method !== 'HEAD') {
     res.writeHead(405, { Allow: 'GET, HEAD' });
     return res.end();
   }
 
-  const { pathname } = new URL(req.url, 'http://localhost');
   const file = resolveFile(pathname);
   if (!file) {
     res.writeHead(400);
@@ -75,7 +96,9 @@ const server = http.createServer((req, res) => {
   });
 });
 
-const gateway = createGateway(server);
+gateway = createGateway(server, {
+  authenticate: (req) => auth.authenticate(parseCookies(req.headers.cookie)[config.SESSION_COOKIE]),
+});
 
 server.listen(config.PORT, config.HOST, () => {
   console.log(`Chat server running at http://${config.HOST}:${config.PORT}`);
@@ -83,7 +106,10 @@ server.listen(config.PORT, config.HOST, () => {
 
 function shutdown() {
   gateway.close();
-  server.close(() => process.exit(0));
+  server.close(() => {
+    db.close();
+    process.exit(0);
+  });
   setTimeout(() => process.exit(0), 2000).unref();
 }
 process.on('SIGINT', shutdown);

@@ -2,91 +2,65 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const http = require('node:http');
-const WebSocket = require('ws');
-const { createGateway } = require('../src/ws/gateway');
+const { startServer } = require('./helpers');
 
-// Start a gateway on a random port and return helpers for talking to it.
-async function startServer() {
-  const server = http.createServer();
-  const gateway = createGateway(server);
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const { port } = server.address();
-
-  async function connect() {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
-    const inbox = [];
-    const waiting = [];
-    ws.on('message', (raw) => {
-      const frame = JSON.parse(raw.toString());
-      const index = waiting.findIndex((w) => w.type === frame.type);
-      if (index >= 0) waiting.splice(index, 1)[0].resolve(frame);
-      else inbox.push(frame);
-    });
-    await new Promise((resolve) => ws.on('open', resolve));
-    return {
-      ws,
-      send: (type, payload, id) => ws.send(JSON.stringify({ type, id, payload })),
-      next(type) {
-        const index = inbox.findIndex((f) => f.type === type);
-        if (index >= 0) return Promise.resolve(inbox.splice(index, 1)[0]);
-        return new Promise((resolve, reject) => {
-          const timer = setTimeout(() => reject(new Error(`timed out waiting for ${type}`)), 1500);
-          waiting.push({ type, resolve: (f) => { clearTimeout(timer); resolve(f); } });
-        });
-      },
-    };
-  }
-
-  return {
-    connect,
-    async stop() {
-      gateway.close();
-      await new Promise((resolve) => server.close(resolve));
-    },
-  };
-}
-
-test('joining returns the user list and announces presence', async () => {
+test('connecting with a valid session returns who you are, who is online and history', async () => {
   const s = await startServer();
   try {
-    const alice = await s.connect();
-    alice.send('session.join', { username: 'Alice' }, '1');
+    const alice = await s.connect('Alice', 'Alice A');
     const ok = await alice.next('session.ok');
-    assert.strictEqual(ok.id, '1');
-    assert.deepStrictEqual(ok.payload.users, ['Alice']);
+    assert.strictEqual(ok.payload.user.username, 'Alice');
+    assert.strictEqual(ok.payload.user.displayName, 'Alice A');
+    assert.deepStrictEqual(ok.payload.users.map((u) => u.displayName), ['Alice A']);
     assert.strictEqual(ok.payload.conversationId, 'lobby');
 
-    const bob = await s.connect();
-    bob.send('session.join', { username: 'Bob' });
+    const bob = await s.connect('Bob');
     await bob.next('session.ok');
-    const presence = await alice.next('presence');
-    // Alice receives her own join presence first, then Bob's.
-    const latest = presence.payload.users.length === 2 ? presence : await alice.next('presence');
-    assert.deepStrictEqual(latest.payload.users, ['Alice', 'Bob']);
+    let latest;
+    do {
+      latest = await alice.next('presence');
+    } while (latest.payload.users.length < 2);
+    assert.deepStrictEqual(latest.payload.users.map((u) => u.displayName), ['Alice A', 'Bob']);
   } finally {
     await s.stop();
   }
 });
 
-test('messages are broadcast to everyone and kept as history', async () => {
+test('sockets without a valid session, or from another site, are refused', async () => {
   const s = await startServer();
   try {
-    const alice = await s.connect();
-    alice.send('session.join', { username: 'Alice' });
-    await alice.next('session.ok');
-    const bob = await s.connect();
-    bob.send('session.join', { username: 'Bob' });
-    await bob.next('session.ok');
+    const status = (headers) =>
+      new Promise((resolve) => {
+        const c = s.openSocket(headers);
+        c.ws.on('unexpected-response', (_req, res) => resolve(res.statusCode));
+        c.ws.on('open', () => resolve('opened'));
+        c.ws.on('error', () => {});
+      });
+    assert.strictEqual(await status({}), 401);
+    assert.strictEqual(await status({ Cookie: 'sid=made-up' }), 401);
+
+    const alice = await s.connect('Alice');
+    assert.strictEqual(await status({ Cookie: `sid=${alice.token}`, Origin: 'http://evil.example' }), 403);
+    assert.strictEqual(await status({ Cookie: `sid=${alice.token}`, Origin: `http://127.0.0.1:${s.port}` }), 'opened');
+  } finally {
+    await s.stop();
+  }
+});
+
+test('messages are broadcast with the display name and kept as history', async () => {
+  const s = await startServer();
+  try {
+    const alice = await s.connect('Alice', 'Alice A');
+    const bob = await s.connect('Bob');
 
     alice.send('message.send', { conversationId: 'lobby', body: '  hello  ' });
     const received = await bob.next('message.new');
-    assert.strictEqual(received.payload.from, 'Alice');
+    assert.strictEqual(received.payload.from, 'Alice A');
+    assert.strictEqual(received.payload.fromId, alice.user.id);
     assert.strictEqual(received.payload.body, 'hello');
     assert.ok(typeof received.payload.ts === 'number');
 
-    const carol = await s.connect();
-    carol.send('session.join', { username: 'Carol' });
+    const carol = await s.connect('Carol');
     const ok = await carol.next('session.ok');
     assert.strictEqual(ok.payload.history.length, 1);
     assert.strictEqual(ok.payload.history[0].body, 'hello');
@@ -95,42 +69,14 @@ test('messages are broadcast to everyone and kept as history', async () => {
   }
 });
 
-test('names must be valid and unique (case-insensitive)', async () => {
+test('one person with two tabs appears once in the user list', async () => {
   const s = await startServer();
   try {
-    const alice = await s.connect();
-    alice.send('session.join', { username: 'Alice' });
-    await alice.next('session.ok');
-
-    const other = await s.connect();
-    other.send('session.join', { username: 'alice' }, 'x');
-    const taken = await other.next('error');
-    assert.strictEqual(taken.payload.code, 'username_taken');
-    assert.strictEqual(taken.id, 'x');
-
-    other.send('session.join', { username: '<script>' });
-    assert.strictEqual((await other.next('error')).payload.code, 'invalid_username');
-    other.send('session.join', { username: 'a'.repeat(21) });
-    assert.strictEqual((await other.next('error')).payload.code, 'invalid_username');
-    other.send('session.join', {});
-    assert.strictEqual((await other.next('error')).payload.code, 'invalid_username');
-  } finally {
-    await s.stop();
-  }
-});
-
-test('leaving frees the name', async () => {
-  const s = await startServer();
-  try {
-    const alice = await s.connect();
-    alice.send('session.join', { username: 'Alice' });
-    await alice.next('session.ok');
-    alice.send('session.leave');
-    await alice.next('session.left');
-
-    const again = await s.connect();
-    again.send('session.join', { username: 'Alice' });
-    await again.next('session.ok');
+    const first = await s.connect('Alice');
+    const second = s.openSocket({ Cookie: `sid=${first.token}` });
+    await second.opened;
+    const ok = await second.next('session.ok');
+    assert.strictEqual(ok.payload.users.length, 1);
   } finally {
     await s.stop();
   }
@@ -139,7 +85,7 @@ test('leaving frees the name', async () => {
 test('bad input is rejected without crashing the server', async () => {
   const s = await startServer();
   try {
-    const c = await s.connect();
+    const c = await s.connect('Dana');
     c.ws.send('not json');
     assert.strictEqual((await c.next('error')).payload.code, 'bad_json');
     c.ws.send(JSON.stringify({ nope: true }));
@@ -148,12 +94,9 @@ test('bad input is rejected without crashing the server', async () => {
     assert.strictEqual((await c.next('error')).payload.code, 'unknown_type');
     c.send('constructor', {});
     assert.strictEqual((await c.next('error')).payload.code, 'unknown_type');
+    c.send('session.join', { username: 'Mallory' }); // the old anonymous login is gone
+    assert.strictEqual((await c.next('error')).payload.code, 'unknown_type');
 
-    c.send('message.send', { conversationId: 'lobby', body: 'hi' });
-    assert.strictEqual((await c.next('error')).payload.code, 'not_joined');
-
-    c.send('session.join', { username: 'Dana' });
-    await c.next('session.ok');
     c.send('message.send', { conversationId: 'elsewhere', body: 'hi' });
     assert.strictEqual((await c.next('error')).payload.code, 'unknown_conversation');
     c.send('message.send', { conversationId: 'lobby', body: 'x'.repeat(2001) });
@@ -166,12 +109,9 @@ test('bad input is rejected without crashing the server', async () => {
 test('flooding is rate limited', async () => {
   const s = await startServer();
   try {
-    const c = await s.connect();
-    c.send('session.join', { username: 'Spammer' });
-    await c.next('session.ok');
+    const c = await s.connect('Spammer');
     for (let i = 0; i < 9; i += 1) c.send('message.send', { conversationId: 'lobby', body: `m${i}` });
-    const err = await c.next('error');
-    assert.strictEqual(err.payload.code, 'rate_limited');
+    assert.strictEqual((await c.next('error')).payload.code, 'rate_limited');
   } finally {
     await s.stop();
   }
@@ -180,19 +120,31 @@ test('flooding is rate limited', async () => {
 test('disconnecting updates presence for everyone else', async () => {
   const s = await startServer();
   try {
-    const alice = await s.connect();
-    alice.send('session.join', { username: 'Alice' });
-    await alice.next('session.ok');
-    const bob = await s.connect();
-    bob.send('session.join', { username: 'Bob' });
-    await bob.next('session.ok');
+    const alice = await s.connect('Alice');
+    const bob = await s.connect('Bob');
     bob.ws.close();
-    // Drain presence frames until the one without Bob arrives.
     let users;
     do {
       users = (await alice.next('presence')).payload.users;
-    } while (users.includes('Bob'));
-    assert.deepStrictEqual(users, ['Alice']);
+    } while (users.some((u) => u.displayName === 'Bob'));
+    assert.deepStrictEqual(users.map((u) => u.displayName), ['Alice']);
+  } finally {
+    await s.stop();
+  }
+});
+
+test('logging out closes that session\'s sockets', async () => {
+  const s = await startServer();
+  try {
+    const alice = await s.connect('Alice');
+    const closed = new Promise((resolve) => alice.ws.on('close', resolve));
+    const res = await fetch(s.url('/api/logout'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: `sid=${alice.token}` },
+      body: '{}',
+    });
+    assert.strictEqual(res.status, 200);
+    await closed;
   } finally {
     await s.stop();
   }

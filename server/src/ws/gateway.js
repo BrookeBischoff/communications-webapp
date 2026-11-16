@@ -2,9 +2,9 @@
 
 const { WebSocketServer } = require('ws');
 const config = require('../config');
+const { sameOrigin } = require('../auth/routes');
 
 const LOBBY = 'lobby';
-const USERNAME_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9_ -]*$/;
 
 /**
  * WebSocket gateway.
@@ -15,21 +15,41 @@ const USERNAME_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9_ -]*$/;
  *             can tell which request failed
  *   - payload message-specific data
  *
+ * Connections are authenticated during the HTTP upgrade: `authenticate(req)`
+ * (supplied by index.js) reads the session cookie and returns
+ * { sessionId, user } or null. Anonymous or cross-site upgrades never become
+ * sockets. As soon as a socket opens the server sends `session.ok`.
+ *
  * The gateway keeps a registry of connected sessions (socket -> user). Later
  * steps add friends, group conversations and call signaling as more handlers
  * on this same router.
  */
-function createGateway(server) {
-  const wss = new WebSocketServer({
-    server,
-    path: config.WS_PATH,
-    maxPayload: config.MAX_PAYLOAD_BYTES,
-  });
+function createGateway(server, { authenticate }) {
+  const wss = new WebSocketServer({ noServer: true, maxPayload: config.MAX_PAYLOAD_BYTES });
 
-  /** @type {Map<import('ws').WebSocket, {username: string|null, alive: boolean, sentAt: number[]}>} */
+  /** @type {Map<import('ws').WebSocket, {user: {id: number, username: string, displayName: string}, sessionId: string, alive: boolean, sentAt: number[]}>} */
   const sessions = new Map();
   const lobbyHistory = [];
   let nextMessageId = 1;
+
+  function reject(socket, status, text) {
+    socket.write(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+    socket.destroy();
+  }
+
+  server.on('upgrade', (req, socket, head) => {
+    let pathname = null;
+    try {
+      pathname = new URL(req.url, 'http://localhost').pathname;
+    } catch {
+      // fall through to the 404 below
+    }
+    if (pathname !== config.WS_PATH) return reject(socket, 404, 'Not Found');
+    if (!sameOrigin(req)) return reject(socket, 403, 'Forbidden');
+    const identity = authenticate(req);
+    if (!identity) return reject(socket, 401, 'Unauthorized');
+    wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req, identity));
+  });
 
   function send(ws, type, payload, id) {
     if (ws.readyState !== ws.OPEN) return;
@@ -43,25 +63,18 @@ function createGateway(server) {
   }
 
   function broadcast(type, payload) {
-    for (const [ws, session] of sessions) {
-      if (session.username) send(ws, type, payload);
-    }
+    for (const ws of sessions.keys()) send(ws, type, payload);
   }
 
+  // One entry per person, even with several tabs open.
   function userList() {
-    const names = [];
-    for (const session of sessions.values()) {
-      if (session.username) names.push(session.username);
+    const people = new Map();
+    for (const { user } of sessions.values()) {
+      people.set(user.id, { id: user.id, displayName: user.displayName });
     }
-    return names.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
-  }
-
-  function isNameTaken(name) {
-    const wanted = name.toLowerCase();
-    for (const session of sessions.values()) {
-      if (session.username && session.username.toLowerCase() === wanted) return true;
-    }
-    return false;
+    return [...people.values()].sort((a, b) =>
+      a.displayName.localeCompare(b.displayName, undefined, { sensitivity: 'base' })
+    );
   }
 
   function withinRateLimit(session) {
@@ -73,47 +86,7 @@ function createGateway(server) {
   }
 
   const handlers = {
-    'session.join'(ws, session, payload, id) {
-      if (session.username) {
-        return sendError(ws, id, 'already_joined', 'You are already logged on.');
-      }
-      const name = typeof payload?.username === 'string' ? payload.username.trim() : '';
-      if (
-        name.length < 1 ||
-        name.length > config.MAX_USERNAME_LENGTH ||
-        !USERNAME_PATTERN.test(name)
-      ) {
-        return sendError(
-          ws,
-          id,
-          'invalid_username',
-          `User names are 1-${config.MAX_USERNAME_LENGTH} characters: letters, numbers, spaces, - and _.`
-        );
-      }
-      if (isNameTaken(name)) {
-        return sendError(ws, id, 'username_taken', `"${name}" is already logged on. Pick another name.`);
-      }
-      session.username = name;
-      send(ws, 'session.ok', {
-        username: name,
-        conversationId: LOBBY,
-        users: userList(),
-        history: lobbyHistory,
-      }, id);
-      broadcast('presence', { users: userList() });
-    },
-
-    'session.leave'(ws, session, _payload, id) {
-      if (!session.username) return;
-      session.username = null;
-      send(ws, 'session.left', {}, id);
-      broadcast('presence', { users: userList() });
-    },
-
     'message.send'(ws, session, payload, id) {
-      if (!session.username) {
-        return sendError(ws, id, 'not_joined', 'Log on before sending messages.');
-      }
       if (payload?.conversationId !== LOBBY) {
         return sendError(ws, id, 'unknown_conversation', 'That conversation does not exist.');
       }
@@ -129,7 +102,8 @@ function createGateway(server) {
       const message = {
         id: nextMessageId++,
         conversationId: LOBBY,
-        from: session.username,
+        fromId: session.user.id,
+        from: session.user.displayName,
         body,
         ts: Date.now(),
       };
@@ -139,8 +113,8 @@ function createGateway(server) {
     },
   };
 
-  wss.on('connection', (ws) => {
-    const session = { username: null, alive: true, sentAt: [] };
+  wss.on('connection', (ws, _req, identity) => {
+    const session = { user: identity.user, sessionId: identity.sessionId, alive: true, sentAt: [] };
     sessions.set(ws, session);
 
     ws.on('pong', () => {
@@ -170,14 +144,21 @@ function createGateway(server) {
     });
 
     ws.on('close', () => {
-      const hadName = session.username;
       sessions.delete(ws);
-      if (hadName) broadcast('presence', { users: userList() });
+      broadcast('presence', { users: userList() });
     });
 
     ws.on('error', () => {
       // Errors are followed by 'close'; nothing extra to do here.
     });
+
+    send(ws, 'session.ok', {
+      user: identity.user,
+      conversationId: LOBBY,
+      users: userList(),
+      history: lobbyHistory,
+    });
+    broadcast('presence', { users: userList() });
   });
 
   // Drop connections that stop answering pings (closed laptops, lost Wi-Fi).
@@ -195,6 +176,12 @@ function createGateway(server) {
 
   return {
     wss,
+    /** Close every socket that belongs to a logged-out session. */
+    disconnectSession(sessionId) {
+      for (const [ws, session] of sessions) {
+        if (session.sessionId === sessionId) ws.close(1000, 'logged out');
+      }
+    },
     close() {
       clearInterval(heartbeat);
       for (const ws of sessions.keys()) ws.terminate();
