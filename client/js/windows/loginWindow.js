@@ -68,7 +68,7 @@ export function openLoginWindow({ manager, store, onLogin, onRegister }) {
     confirm.wrapper.hidden = !registering;
     password.input.autocomplete = registering ? 'new-password' : 'current-password';
     intro.textContent = registering
-      ? 'Create an account. Passwords need at least 10 characters.'
+      ? 'Create an account. Passwords need at least 8 characters.'
       : 'Log on to join the chat.';
     submit.textContent = registering ? 'Register' : 'Log on';
     toggle.textContent = registering ? 'Back to log on' : 'Register...';

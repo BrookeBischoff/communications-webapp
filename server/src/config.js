@@ -20,7 +20,7 @@ module.exports = {
   MIN_USERNAME_LENGTH: 3,
   MAX_USERNAME_LENGTH: 20,
   MAX_DISPLAY_NAME_LENGTH: 30,
-  MIN_PASSWORD_LENGTH: 10,
+  MIN_PASSWORD_LENGTH: 8,
   MAX_PASSWORD_LENGTH: 128, // caps the work a single request can make the hasher do
 
   SESSION_COOKIE: 'sid',
